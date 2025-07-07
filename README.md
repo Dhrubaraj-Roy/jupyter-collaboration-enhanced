@@ -122,18 +122,46 @@ http://localhost:8888/lab?username=Student2&readonly=false
 
 ```
 projectX/
-├── custom_identity_provider.py      # URL-based identity provider
-├── jupyter_server_config.py         # Server configuration
-├── start_collaboration_server.sh    # Startup script
-├── demo_notebook.ipynb              # Demo content
-├── jupyter-collaboration/           # Modified extension
-│   └── packages/
-│       └── collaboration-extension/
-│           └── src/
-│               ├── readonly.ts      # Read-only functionality
-│               ├── collaboration.ts # Modified with read-only plugin
-│               └── index.ts         # Plugin registration
-└── jupyter-collab-env/             # Python environment
+├── .jupyter_ystore.db # Y.js collaboration database
+├── dhruba_testing.ipynb # Example/test notebook
+├── demo_notebook.ipynb # Demo content for collaboration
+├── jupyter_server_config.py # Jupyter server configuration
+├── TESTING.md # Testing instructions
+├── README.md # Project documentation
+├── .gitignore # Git ignore rules
+├── .DS_Store # macOS system file
+├── jupyter-collab-env/ # Python virtual environment
+├── docs/ # Documentation folder
+│ ├── 01_Overview/ # Overview documentation
+│ ├── 02_Key_Source_Files/ # Key source files for review
+│ └── project_structure.txt # Project structure reference
+├── packages/ # Additional packages (if any)
+├── .ipynb_checkpoints/ # Jupyter notebook checkpoints
+└── jupyter-collaboration/ # Main collaboration extension (monorepo)
+├── .github/ # GitHub workflows and configs
+├── .yarn/ # Yarn package manager cache
+├── binder/ # Binder config for reproducible environments
+├── docs/ # Extension documentation
+├── node_modules/ # Node.js dependencies (not in git)
+├── packages/ # Frontend TypeScript packages
+│ ├── collaboration/ # Core collaboration UI components
+│ ├── collaboration-extension/ # JupyterLab extension (main frontend)
+│ ├── collaborative-drive/ # Collaborative file browser
+│ ├── docprovider/ # Y.js document provider
+│ └── docprovider-extension/ # JupyterLab docprovider extension
+├── projects/ # Python backend packages
+│ ├── jupyter-collaboration/ # Python collaboration package
+│ ├── jupyter-collaboration-ui/ # Python UI integration
+│ ├── jupyter-docprovider/ # Python Y.js document provider
+│ └── jupyter-server-ydoc/ # Python Y.js server extension
+├── scripts/ # Development and build scripts
+├── tests/ # Python backend tests
+├── ui-tests/ # Playwright frontend tests
+├── package.json # Node.js project configuration
+├── yarn.lock # Yarn dependency lock file
+├── pyproject.toml # Python project configuration
+├── lerna.json # Lerna monorepo configuration
+└── various config files # (.eslintrc, .prettierrc, etc.)
 ```
 
 - **Note:** The `lib/` folders inside each package are build artifacts and are not tracked in git (see `.gitignore`).
