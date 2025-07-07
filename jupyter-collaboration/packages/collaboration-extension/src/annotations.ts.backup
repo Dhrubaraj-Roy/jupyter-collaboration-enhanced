@@ -1,0 +1,780 @@
+// Copyright (c) Jupyter Development Team.
+// Distributed under the terms of the Modified BSD License.
+/**
+ * @packageDocumentation  
+ * @module live-code-annotations
+ */
+
+import { JupyterFrontEnd } from '@jupyterlab/application';
+import { IDocumentWidget } from '@jupyterlab/docregistry';
+// import { INotebookModel } from '@jupyterlab/notebook';
+import { Widget } from '@lumino/widgets';
+// import { Message } from '@lumino/messaging';
+
+/**
+ * Interface for annotation data
+ */
+export interface IAnnotation {
+  id: string;
+  cellId: string;
+  lineNumber?: number;
+  author: string;
+  content: string;
+  type: 'question' | 'feedback' | 'suggestion' | 'approval';
+  timestamp: number;
+  resolved: boolean;
+  replies?: IAnnotation[];
+  targetText?: string; // The specific text being commented on
+}
+
+/**
+ * Interface for user data
+ */
+export interface IUser {
+  username: string;
+  displayName: string;
+  role: 'teacher' | 'student' | 'peer';
+  color: string;
+}
+
+/**
+ * Live annotation manager for code review
+ */
+export class AnnotationManager {
+  private _app: JupyterFrontEnd;
+  private _annotations: Map<string, IAnnotation[]> = new Map();
+  private _currentUser: IUser;
+  private _reviewPanel: ReviewPanel | null = null;
+
+  constructor(app: JupyterFrontEnd) {
+    this._app = app;
+    this._currentUser = this._getCurrentUser();
+    this._setupReviewPanel();
+    this._setupDocumentMonitoring();
+  }
+
+  /**
+   * Get current user information from URL parameters
+   */
+  private _getCurrentUser(): IUser {
+    const url = new URL(window.location.href);
+    const username = url.searchParams.get('username') || 'Anonymous';
+    const readonly = url.searchParams.get('readonly')?.toLowerCase() === 'true';
+    
+    return {
+      username,
+      displayName: username,
+      role: readonly ? 'teacher' : 'student',
+      color: this._generateUserColor(username)
+    };
+  }
+
+  /**
+   * Generate consistent color for user
+   */
+  private _generateUserColor(username: string): string {
+    const colors = [
+      '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', 
+      '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'
+    ];
+    const hash = username.split('').reduce((a, b) => {
+      a = ((a << 5) - a) + b.charCodeAt(0);
+      return a & a;
+    }, 0);
+    return colors[Math.abs(hash) % colors.length];
+  }
+
+  /**
+   * Setup the review panel
+   */
+  private _setupReviewPanel(): void {
+    this._reviewPanel = new ReviewPanel(this);
+    this._app.shell.add(this._reviewPanel, 'right', { rank: 1000 });
+  }
+
+  /**
+   * Monitor document widgets for annotation capabilities
+   */
+  private _setupDocumentMonitoring(): void {
+    // Monitor for new widgets
+    this._app.shell.currentChanged.connect(() => {
+      const current = this._app.shell.currentWidget;
+      if (current && this._isNotebookWidget(current)) {
+        this._enableAnnotations(current as IDocumentWidget);
+      }
+    });
+
+    // Enable annotations for existing notebooks
+    const widgets = Array.from(this._app.shell.widgets('main'));
+    widgets.forEach((widget: Widget) => {
+      if (this._isNotebookWidget(widget)) {
+        this._enableAnnotations(widget as IDocumentWidget);
+      }
+    });
+  }
+
+  /**
+   * Check if widget is a notebook widget
+   */
+  private _isNotebookWidget(widget: any): boolean {
+    return widget && 
+           widget.context && 
+           widget.context.path.endsWith('.ipynb');
+  }
+
+  /**
+   * Enable annotations for a notebook widget
+   */
+  private _enableAnnotations(widget: IDocumentWidget): void {
+    const notebook = (widget as any).content;
+    if (!notebook) return;
+
+    // Add annotation capabilities to each cell
+    const cells = notebook.widgets;
+    cells.forEach((cell: any, index: number) => {
+      this._setupCellAnnotations(cell, widget.context.path);
+    });
+
+    // Monitor for new cells
+    notebook.model?.cells.changed.connect(() => {
+      setTimeout(() => {
+        notebook.widgets.forEach((cell: any) => {
+          if (!cell._annotationEnabled) {
+            this._setupCellAnnotations(cell, widget.context.path);
+          }
+        });
+      }, 100);
+    });
+  }
+
+  /**
+   * Setup annotation capabilities for a cell
+   */
+  private _setupCellAnnotations(cell: any, notebookPath: string): void {
+    if (cell._annotationEnabled) return;
+    cell._annotationEnabled = true;
+
+    const cellId = `${notebookPath}-${cell.model.id}`;
+    
+    // Add annotation button to cell toolbar
+    this._addAnnotationButton(cell, cellId);
+    
+    // Setup line-level annotation on code cells
+    if (cell.model.type === 'code') {
+      this._setupLineAnnotations(cell, cellId);
+    }
+    
+    // Display existing annotations
+    this._displayCellAnnotations(cell, cellId);
+  }
+
+  /**
+   * Add annotation button to cell
+   */
+  private _addAnnotationButton(cell: any, cellId: string): void {
+    const toolbar = cell.toolbar;
+    if (!toolbar) return;
+
+    const annotationButton = document.createElement('button');
+    annotationButton.className = 'jp-ToolbarButton annotation-button';
+    annotationButton.innerHTML = `
+      <span class="annotation-icon">💬</span>
+      <span class="annotation-count">${this._getAnnotationCount(cellId)}</span>
+    `;
+    annotationButton.title = 'Add annotation';
+    annotationButton.style.cssText = `
+      background: none;
+      border: none;
+      padding: 4px 8px;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    `;
+
+    annotationButton.addEventListener('click', () => {
+      this._showAnnotationDialog(cellId, cell);
+    });
+
+    // Add to toolbar
+    const toolbarNode = toolbar.node;
+    if (toolbarNode) {
+      toolbarNode.appendChild(annotationButton);
+    }
+    
+    // Store reference for updates
+    cell._annotationButton = annotationButton;
+  }
+
+  /**
+   * Setup line-level annotations for code cells
+   */
+  private _setupLineAnnotations(cell: any, cellId: string): void {
+    const editor = cell.editor;
+    if (!editor || !editor.host) return;
+
+    const editorHost = editor.host;
+    
+    // Add click handler for line annotations
+    editorHost.addEventListener('click', (event: MouseEvent) => {
+      // Check if clicked in gutter area
+      const target = event.target as HTMLElement;
+      if (target.classList.contains('cm-gutterElement')) {
+        const lineNumber = this._getLineNumber(target);
+        if (lineNumber !== null) {
+          this._showLineAnnotationDialog(cellId, lineNumber, cell);
+        }
+      }
+    });
+
+    // Style the gutter for annotation hints
+    this._styleGutterForAnnotations(editorHost, cellId);
+  }
+
+  /**
+   * Get line number from gutter element
+   */
+  private _getLineNumber(element: HTMLElement): number | null {
+    const lineDiv = element.closest('[data-line]') as HTMLElement;
+    return lineDiv ? parseInt(lineDiv.dataset.line || '0') : null;
+  }
+
+  /**
+   * Style gutter to show annotation availability
+   */
+  private _styleGutterForAnnotations(editorHost: HTMLElement, cellId: string): void {
+    const style = document.createElement('style');
+    style.textContent = `
+      .cm-gutterElement:hover {
+        background-color: #e3f2fd !important;
+        cursor: pointer;
+      }
+      .cm-gutterElement.has-annotation {
+        background-color: #ffeb3b !important;
+        position: relative;
+      }
+      .cm-gutterElement.has-annotation::after {
+        content: "💬";
+        position: absolute;
+        right: 2px;
+        font-size: 10px;
+      }
+    `;
+    editorHost.appendChild(style);
+  }
+
+  /**
+   * Show annotation dialog for cell
+   */
+  private _showAnnotationDialog(cellId: string, cell: any): void {
+    const dialog = new AnnotationDialog(this._currentUser, (annotation) => {
+      this._addAnnotation(cellId, annotation);
+      this._updateAnnotationButton(cell._annotationButton, cellId);
+      this._refreshReviewPanel();
+    });
+    
+    document.body.appendChild(dialog.node);
+    dialog.show();
+  }
+
+  /**
+   * Show line-specific annotation dialog
+   */
+  private _showLineAnnotationDialog(cellId: string, lineNumber: number, cell: any): void {
+    const dialog = new AnnotationDialog(this._currentUser, (annotation) => {
+      annotation.lineNumber = lineNumber;
+      this._addAnnotation(cellId, annotation);
+      this._updateAnnotationButton(cell._annotationButton, cellId);
+      this._refreshReviewPanel();
+      this._highlightAnnotatedLine(cell, lineNumber);
+    });
+    
+    document.body.appendChild(dialog.node);
+    dialog.show();
+  }
+
+  /**
+   * Add annotation to storage
+   */
+  private _addAnnotation(cellId: string, annotation: IAnnotation): void {
+    if (!this._annotations.has(cellId)) {
+      this._annotations.set(cellId, []);
+    }
+    
+    annotation.id = `${cellId}-${Date.now()}-${Math.random()}`;
+    annotation.cellId = cellId;
+    annotation.timestamp = Date.now();
+    annotation.author = this._currentUser.username;
+    
+    const cellAnnotations = this._annotations.get(cellId);
+    if (cellAnnotations) {
+      cellAnnotations.push(annotation);
+    }
+    
+    // TODO: Broadcast to other users via collaboration protocol
+    this._broadcastAnnotation(annotation);
+  }
+
+  /**
+   * Broadcast annotation to collaborators
+   */
+  private _broadcastAnnotation(annotation: IAnnotation): void {
+    // This would integrate with the Y.js collaboration protocol
+    console.log('Broadcasting annotation:', annotation);
+  }
+
+  /**
+   * Get annotation count for a cell
+   */
+  private _getAnnotationCount(cellId: string): number {
+    return this._annotations.get(cellId)?.length || 0;
+  }
+
+  /**
+   * Update annotation button count
+   */
+  private _updateAnnotationButton(button: HTMLElement, cellId: string): void {
+    const countSpan = button.querySelector('.annotation-count');
+    if (countSpan) {
+      countSpan.textContent = this._getAnnotationCount(cellId).toString();
+    }
+  }
+
+  /**
+   * Display existing annotations for a cell
+   */
+  private _displayCellAnnotations(cell: any, cellId: string): void {
+    const annotations = this._annotations.get(cellId) || [];
+    annotations.forEach(annotation => {
+      if (annotation.lineNumber !== undefined) {
+        this._highlightAnnotatedLine(cell, annotation.lineNumber);
+      }
+    });
+  }
+
+  /**
+   * Highlight line with annotation
+   */
+  private _highlightAnnotatedLine(cell: any, lineNumber: number): void {
+    const editor = cell.editor;
+    if (!editor || !editor.host) return;
+
+    const gutterElements = editor.host.querySelectorAll('.cm-gutterElement');
+    if (gutterElements[lineNumber - 1]) {
+      gutterElements[lineNumber - 1].classList.add('has-annotation');
+    }
+  }
+
+  /**
+   * Get all annotations for review panel
+   */
+  public getAllAnnotations(): Map<string, IAnnotation[]> {
+    return this._annotations;
+  }
+
+  /**
+   * Get current user
+   */
+  public getCurrentUser(): IUser {
+    return this._currentUser;
+  }
+
+  /**
+   * Refresh review panel
+   */
+  private _refreshReviewPanel(): void {
+    if (this._reviewPanel) {
+      this._reviewPanel.refresh();
+    }
+  }
+}
+
+/**
+ * Review panel widget for displaying annotations
+ */
+export class ReviewPanel extends Widget {
+  private _manager: AnnotationManager;
+
+  constructor(manager: AnnotationManager) {
+    super();
+    this._manager = manager;
+    this.id = 'live-code-review-panel';
+    this.title.label = 'Code Review';
+    this.title.iconClass = 'jp-MaterialIcon jp-CommentIcon';
+    this.title.closable = true;
+    this.addClass('jp-review-panel');
+    this._setupPanel();
+  }
+
+  /**
+   * Setup the panel layout
+   */
+  private _setupPanel(): void {
+    this.node.innerHTML = `
+      <div class="review-panel-header">
+        <h3>💬 Live Code Review</h3>
+        <div class="review-stats">
+          <span class="annotation-count">0 comments</span>
+        </div>
+      </div>
+      <div class="review-panel-content">
+        <div class="no-annotations">
+          No annotations yet. Click 💬 on any cell to add feedback!
+        </div>
+      </div>
+    `;
+
+    // Add styling
+    const style = document.createElement('style');
+    style.textContent = `
+      .jp-review-panel {
+        min-width: 300px;
+        font-family: var(--jp-ui-font-family);
+      }
+      .review-panel-header {
+        padding: 12px;
+        border-bottom: 1px solid var(--jp-border-color0);
+        background: var(--jp-layout-color1);
+      }
+      .review-panel-header h3 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .review-stats {
+        font-size: 12px;
+        color: var(--jp-ui-font-color2);
+      }
+      .review-panel-content {
+        padding: 12px;
+        overflow-y: auto;
+        max-height: calc(100vh - 200px);
+      }
+      .no-annotations {
+        text-align: center;
+        color: var(--jp-ui-font-color2);
+        font-style: italic;
+        padding: 20px;
+      }
+      .annotation-item {
+        background: var(--jp-layout-color1);
+        border: 1px solid var(--jp-border-color0);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .annotation-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .annotation-author {
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .annotation-time {
+        font-size: 11px;
+        color: var(--jp-ui-font-color2);
+      }
+      .annotation-content {
+        font-size: 13px;
+        line-height: 1.4;
+        margin-bottom: 8px;
+      }
+      .annotation-meta {
+        font-size: 11px;
+        color: var(--jp-ui-font-color2);
+        display: flex;
+        gap: 12px;
+      }
+      .annotation-type {
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .annotation-type.question { background: #e3f2fd; color: #1976d2; }
+      .annotation-type.feedback { background: #fff3e0; color: #f57c00; }
+      .annotation-type.suggestion { background: #e8f5e8; color: #388e3c; }
+      .annotation-type.approval { background: #fce4ec; color: #c2185b; }
+    `;
+    document.head.appendChild(style);
+
+    this.refresh();
+  }
+
+  /**
+   * Refresh panel content
+   */
+  public refresh(): void {
+    const annotations = this._manager.getAllAnnotations();
+    const content = this.node.querySelector('.review-panel-content');
+    const stats = this.node.querySelector('.annotation-count');
+    
+    if (!content || !stats) return;
+
+    let totalCount = 0;
+    let html = '';
+
+    for (const [, cellAnnotations] of annotations) {
+      totalCount += cellAnnotations.length;
+      
+      cellAnnotations.forEach(annotation => {
+        html += this._renderAnnotation(annotation);
+      });
+    }
+
+    stats.textContent = `${totalCount} comment${totalCount !== 1 ? 's' : ''}`;
+
+    if (totalCount === 0) {
+      content.innerHTML = '<div class="no-annotations">No annotations yet. Click 💬 on any cell to add feedback!</div>';
+    } else {
+      content.innerHTML = html;
+    }
+  }
+
+  /**
+   * Render an annotation item
+   */
+  private _renderAnnotation(annotation: IAnnotation): string {
+    const time = new Date(annotation.timestamp).toLocaleTimeString();
+    const lineInfo = annotation.lineNumber ? ` (Line ${annotation.lineNumber})` : '';
+    
+    return `
+      <div class="annotation-item">
+        <div class="annotation-header">
+          <span class="annotation-author">${annotation.author}</span>
+          <span class="annotation-time">${time}</span>
+        </div>
+        <div class="annotation-content">${annotation.content}</div>
+        <div class="annotation-meta">
+          <span class="annotation-type ${annotation.type}">${annotation.type}</span>
+          <span>Cell: ${annotation.cellId.split('-').pop()}${lineInfo}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Handle resize message
+   */
+  protected onResize(msg: any): void {
+    super.onResize(msg);
+    this.refresh();
+  }
+}
+
+/**
+ * Annotation dialog for creating new annotations
+ */
+export class AnnotationDialog extends Widget {
+  private _user: IUser;
+  private _onSubmit: (annotation: IAnnotation) => void;
+
+  constructor(user: IUser, onSubmit: (annotation: IAnnotation) => void) {
+    super();
+    this._user = user;
+    this._onSubmit = onSubmit;
+    this.addClass('jp-annotation-dialog');
+    this._setupDialog();
+  }
+
+  /**
+   * Setup dialog UI
+   */
+  private _setupDialog(): void {
+    this.node.innerHTML = `
+      <div class="annotation-dialog-overlay">
+        <div class="annotation-dialog-content">
+          <div class="annotation-dialog-header">
+            <h3>💬 Add Code Review Comment</h3>
+            <button class="close-button">×</button>
+          </div>
+          <div class="annotation-dialog-body">
+            <div class="form-group">
+              <label>Type:</label>
+              <select class="annotation-type-select">
+                <option value="question">❓ Question</option>
+                <option value="feedback">📝 Feedback</option>
+                <option value="suggestion">💡 Suggestion</option>
+                <option value="approval">✅ Approval</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Comment:</label>
+              <textarea class="annotation-content-input" placeholder="Enter your comment here..." rows="4"></textarea>
+            </div>
+          </div>
+          <div class="annotation-dialog-footer">
+            <button class="cancel-button">Cancel</button>
+            <button class="submit-button">Add Comment</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Add styling
+    const style = document.createElement('style');
+    style.textContent = `
+      .jp-annotation-dialog {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 10000;
+      }
+      .annotation-dialog-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .annotation-dialog-content {
+        background: var(--jp-layout-color1);
+        border-radius: 8px;
+        min-width: 400px;
+        max-width: 90vw;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      }
+      .annotation-dialog-header {
+        padding: 16px;
+        border-bottom: 1px solid var(--jp-border-color0);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .annotation-dialog-header h3 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .close-button {
+        background: none;
+        border: none;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 4px;
+      }
+      .annotation-dialog-body {
+        padding: 16px;
+      }
+      .form-group {
+        margin-bottom: 16px;
+      }
+      .form-group label {
+        display: block;
+        margin-bottom: 4px;
+        font-weight: 500;
+        font-size: 13px;
+      }
+      .annotation-type-select,
+      .annotation-content-input {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid var(--jp-border-color1);
+        border-radius: 4px;
+        font-family: var(--jp-ui-font-family);
+        font-size: 13px;
+      }
+      .annotation-content-input {
+        resize: vertical;
+        min-height: 80px;
+      }
+      .annotation-dialog-footer {
+        padding: 16px;
+        border-top: 1px solid var(--jp-border-color0);
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .cancel-button,
+      .submit-button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .cancel-button {
+        background: var(--jp-layout-color2);
+        color: var(--jp-ui-font-color1);
+      }
+      .submit-button {
+        background: var(--jp-brand-color1);
+        color: white;
+      }
+    `;
+    document.head.appendChild(style);
+
+    this._setupEventListeners();
+  }
+
+  /**
+   * Setup event listeners
+   */
+  private _setupEventListeners(): void {
+    const closeButton = this.node.querySelector('.close-button');
+    const cancelButton = this.node.querySelector('.cancel-button');
+    const submitButton = this.node.querySelector('.submit-button');
+    const overlay = this.node.querySelector('.annotation-dialog-overlay');
+
+    closeButton?.addEventListener('click', () => this.hide());
+    cancelButton?.addEventListener('click', () => this.hide());
+    submitButton?.addEventListener('click', () => this._handleSubmit());
+    
+    overlay?.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        this.hide();
+      }
+    });
+  }
+
+  /**
+   * Handle form submission
+   */
+  private _handleSubmit(): void {
+    const typeSelect = this.node.querySelector('.annotation-type-select') as HTMLSelectElement;
+    const contentInput = this.node.querySelector('.annotation-content-input') as HTMLTextAreaElement;
+
+    if (!contentInput.value.trim()) {
+      alert('Please enter a comment');
+      return;
+    }
+
+    const annotation: IAnnotation = {
+      id: '', // Will be set by manager
+      cellId: '', // Will be set by manager
+      content: contentInput.value.trim(),
+      type: typeSelect.value as any,
+      author: this._user.username,
+      timestamp: Date.now(),
+      resolved: false
+    };
+
+    this._onSubmit(annotation);
+    this.hide();
+  }
+
+  /**
+   * Show dialog
+   */
+  public show(): void {
+    this.node.style.display = 'block';
+    const contentInput = this.node.querySelector('.annotation-content-input') as HTMLTextAreaElement;
+    setTimeout(() => contentInput?.focus(), 100);
+  }
+
+  /**
+   * Hide dialog
+   */
+  public hide(): void {
+    this.node.remove();
+  }
+} 

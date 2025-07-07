@@ -1,0 +1,141 @@
+# Copyright (c) Jupyter Development Team.
+# Distributed under the terms of the Modified BSD License.
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling>=1.4.0", "hatch-nodejs-version", "jupyterlab>=4.0.0"]
+
+[project]
+name = "jupyter-collaboration-monorepo"
+requires-python = ">=3.8"
+dependencies = [
+    # jupyter-server extensions
+    "jupyter-server-ydoc @ {root:uri}/projects/jupyter-server-ydoc",
+    # jupyterlab/notebook frontend extensions
+    "jupyter-collaboration-ui @ {root:uri}/projects/jupyter-collaboration-ui",
+    "jupyter-docprovider @ {root:uri}/projects/jupyter-docprovider",
+    # the metapackage
+    "jupyter-collaboration @ {root:uri}/projects/jupyter-collaboration",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "click",
+    "pre-commit",
+    "jupyter_releaser",
+    "tomlkit"
+]
+test = [
+    "jupyter-server-ydoc[test] @ {root:uri}/projects/jupyter-server-ydoc",
+]
+docs = [
+    "jupyterlab>=4.4.0",
+    "sphinx",
+    "myst-parser",
+    "pydata-sphinx-theme",
+    "sphinxcontrib-mermaid"
+]
+
+[tool.ruff]
+line-length = 100
+exclude = ["binder"]
+
+[tool.hatch.version]
+source = "nodejs"
+
+[tool.hatch.build]
+packages = [
+    "projects/jupyter-server-ydoc",
+    "projects/jupyter-collaboration-ui",
+    "projects/jupyter-docprovider",
+    "projects/jupyter-collaboration"
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.jupyter-releaser]
+skip = ["check-links", "check-python"]
+
+[tool.jupyter-releaser.options]
+# `--skip-if-dirty` is a workaround for https://github.com/jupyter-server/jupyter_releaser/issues/567
+version-cmd = "cd ../.. && python scripts/bump_version.py --force --skip-if-dirty"
+python_packages = [
+    "projects/jupyter-server-ydoc:jupyter-server-ydoc",
+    "projects/jupyter-collaboration-ui:jupyter-collaboration-ui",
+    "projects/jupyter-docprovider:jupyter-docprovider",
+    "projects/jupyter-collaboration:jupyter-collaboration"
+]
+
+[tool.jupyter-releaser.hooks]
+before-build-npm = [
+    "YARN_ENABLE_IMMUTABLE_INSTALLS=0 jlpm build:prod"
+]
+before-build-python = [
+    "jlpm clean:all",
+    # Build the assets
+    "jlpm build:prod",
+    # Clean the build artifacts to not include them in sdist
+    "jlpm clean:lib"
+]
+before-bump-version = [
+    "python -m pip install -U jupyterlab tomlkit",
+    "jlpm"
+]
+
+[tool.pytest.ini_options]
+addopts = "-raXs --durations 10 --color=yes --doctest-modules"
+testpaths = ["tests/"]
+timeout = 300
+# Restore this setting to debug failures
+# timeout_method = "thread"
+filterwarnings = [
+    "error",
+    # From tornado
+    "ignore:unclosed <socket.socket:ResourceWarning",
+    "module:make_current is deprecated:DeprecationWarning",
+    "module:clear_current is deprecated:DeprecationWarning",
+    "module:There is no current event loop:DeprecationWarning",
+    #
+    "module:Jupyter is migrating its paths to use standard platformdirs:DeprecationWarning",
+    # In PyPy/Cython: see https://github.com/yaml/pyyaml/issues/688
+    "ignore:can't resolve package from __spec__ or __package__, falling back on __name__ and __path__:ImportWarning",
+    # see https://github.com/dateutil/dateutil/issues/1314
+    "ignore:.*datetime.utcfromtimestamp\\(\\) is deprecated.*:DeprecationWarning:",
+    # From anyio https://github.com/agronholm/anyio/pull/715
+    'ignore:Unclosed <MemoryObjectSendStream:ResourceWarning',
+    # see https://github.com/python/cpython/issues/126259
+    'ignore:unclosed database in <sqlite3.Connection object',
+]
+
+[tool.mypy]
+exclude=[
+    "^binder/jupyter_config\\.py$",
+    "^scripts/bump_version\\.py$",
+    "/setup\\.py$",
+]
+check_untyped_defs = true
+disallow_any_generics = false
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+no_implicit_reexport = true
+pretty = true
+show_error_context = true
+show_error_codes = true
+strict_equality = true
+strict_optional = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_return_any = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "traitlets.*",
+    "jupyter_server.*",
+    "terminado"
+]
+ignore_missing_imports = true

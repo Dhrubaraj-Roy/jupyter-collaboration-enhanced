@@ -1,0 +1,589 @@
+// Copyright (c) Jupyter Development Team.
+// Distributed under the terms of the Modified BSD License.
+/**
+ * @packageDocumentation
+ * @module peer-review-workflow
+ */
+
+import { JupyterFrontEnd } from '@jupyterlab/application';
+import { Widget } from '@lumino/widgets';
+import { IUser } from './annotations';
+
+/**
+ * Interface for review assignments
+ */
+export interface IReviewAssignment {
+  id: string;
+  assignedTo: string;
+  assignedBy: string;
+  notebookPath: string;
+  dueDate: Date;
+  status: 'pending' | 'in_progress' | 'completed' | 'approved' | 'rejected';
+  criteria: string[];
+  feedback: string;
+  score?: number;
+  submittedAt?: Date;
+}
+
+/**
+ * Interface for review criteria
+ */
+export interface IReviewCriteria {
+  id: string;
+  name: string;
+  description: string;
+  weight: number;
+  maxScore: number;
+}
+
+/**
+ * Peer review workflow manager
+ */
+export class PeerReviewManager {
+  private _app: JupyterFrontEnd;
+  private _assignments: Map<string, IReviewAssignment> = new Map();
+  private _criteria: IReviewCriteria[] = [];
+  private _currentUser: IUser;
+  private _reviewPanel: PeerReviewPanel | null = null;
+
+  constructor(app: JupyterFrontEnd) {
+    this._app = app;
+    this._currentUser = this._getCurrentUser();
+    this._setupDefaultCriteria();
+    this._setupReviewPanel();
+  }
+
+  /**
+   * Get current user information
+   */
+  private _getCurrentUser(): IUser {
+    const url = new URL(window.location.href);
+    const username = url.searchParams.get('username') || 'Anonymous';
+    const readonly = url.searchParams.get('readonly')?.toLowerCase() === 'true';
+    
+    return {
+      username,
+      displayName: username,
+      role: readonly ? 'teacher' : 'student',
+      color: this._generateUserColor(username)
+    };
+  }
+
+  /**
+   * Generate consistent color for user
+   */
+  private _generateUserColor(username: string): string {
+    const colors = [
+      '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', 
+      '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'
+    ];
+    const hash = username.split('').reduce((a, b) => {
+      a = ((a << 5) - a) + b.charCodeAt(0);
+      return a & a;
+    }, 0);
+    return colors[Math.abs(hash) % colors.length];
+  }
+
+  /**
+   * Setup default review criteria
+   */
+  private _setupDefaultCriteria(): void {
+    this._criteria = [
+      {
+        id: 'code-quality',
+        name: 'Code Quality',
+        description: 'Clean, readable, and well-structured code',
+        weight: 30,
+        maxScore: 10
+      },
+      {
+        id: 'functionality',
+        name: 'Functionality',
+        description: 'Code works as expected and meets requirements',
+        weight: 40,
+        maxScore: 10
+      },
+      {
+        id: 'documentation',
+        name: 'Documentation',
+        description: 'Clear comments and explanations',
+        weight: 20,
+        maxScore: 10
+      },
+      {
+        id: 'efficiency',
+        name: 'Efficiency',
+        description: 'Optimal use of algorithms and resources',
+        weight: 10,
+        maxScore: 10
+      }
+    ];
+  }
+
+  /**
+   * Setup peer review panel
+   */
+  private _setupReviewPanel(): void {
+    this._reviewPanel = new PeerReviewPanel(this);
+    this._app.shell.add(this._reviewPanel, 'left', { rank: 2000 });
+  }
+
+  /**
+   * Create a new review assignment
+   */
+  public createAssignment(
+    assignedTo: string,
+    notebookPath: string,
+    dueDate: Date,
+    criteria: string[]
+  ): IReviewAssignment {
+    const assignment: IReviewAssignment = {
+      id: `review-${Date.now()}-${Math.random()}`,
+      assignedTo,
+      assignedBy: this._currentUser.username,
+      notebookPath,
+      dueDate,
+      status: 'pending',
+      criteria,
+      feedback: ''
+    };
+
+    this._assignments.set(assignment.id, assignment);
+    this._refreshReviewPanel();
+    return assignment;
+  }
+
+  /**
+   * Start a review
+   */
+  public startReview(assignmentId: string): void {
+    const assignment = this._assignments.get(assignmentId);
+    if (assignment && assignment.assignedTo === this._currentUser.username) {
+      assignment.status = 'in_progress';
+      this._refreshReviewPanel();
+    }
+  }
+
+  /**
+   * Submit a review
+   */
+  public submitReview(
+    assignmentId: string,
+    feedback: string,
+    score: number
+  ): void {
+    const assignment = this._assignments.get(assignmentId);
+    if (assignment && assignment.assignedTo === this._currentUser.username) {
+      assignment.status = 'completed';
+      assignment.feedback = feedback;
+      assignment.score = score;
+      assignment.submittedAt = new Date();
+      this._refreshReviewPanel();
+      
+      // Show completion notification
+      this._showNotification('Review submitted successfully!', 'success');
+    }
+  }
+
+  /**
+   * Get assignments for current user
+   */
+  public getMyAssignments(): IReviewAssignment[] {
+    return Array.from(this._assignments.values())
+      .filter(a => a.assignedTo === this._currentUser.username);
+  }
+
+  /**
+   * Get assignments created by current user
+   */
+  public getCreatedAssignments(): IReviewAssignment[] {
+    return Array.from(this._assignments.values())
+      .filter(a => a.assignedBy === this._currentUser.username);
+  }
+
+  /**
+   * Get review criteria
+   */
+  public getCriteria(): IReviewCriteria[] {
+    return this._criteria;
+  }
+
+  /**
+   * Show notification
+   */
+  private _showNotification(message: string, type: 'success' | 'error' | 'info'): void {
+    const notification = document.createElement('div');
+    notification.className = `review-notification ${type}`;
+    notification.textContent = message;
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      border-radius: 6px;
+      color: white;
+      font-weight: 500;
+      z-index: 10000;
+      animation: slideIn 0.3s ease-out;
+    `;
+
+    if (type === 'success') notification.style.background = '#4caf50';
+    if (type === 'error') notification.style.background = '#f44336';
+    if (type === 'info') notification.style.background = '#2196f3';
+
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+  }
+
+  /**
+   * Refresh review panel
+   */
+  private _refreshReviewPanel(): void {
+    if (this._reviewPanel) {
+      this._reviewPanel.refresh();
+    }
+  }
+
+  /**
+   * Get current user
+   */
+  public getCurrentUser(): IUser {
+    return this._currentUser;
+  }
+}
+
+/**
+ * Peer review panel widget
+ */
+export class PeerReviewPanel extends Widget {
+  private _manager: PeerReviewManager;
+
+  constructor(manager: PeerReviewManager) {
+    super();
+    this._manager = manager;
+    this.id = 'peer-review-panel';
+    this.title.label = 'Peer Review';
+    this.title.iconClass = 'jp-MaterialIcon jp-TaskIcon';
+    this.title.closable = true;
+    this.addClass('jp-peer-review-panel');
+    this._setupPanel();
+  }
+
+  /**
+   * Setup panel layout
+   */
+  private _setupPanel(): void {
+    this.node.innerHTML = `
+      <div class="peer-review-header">
+        <h3>📋 Peer Review</h3>
+        <button class="new-assignment-btn">+ New Assignment</button>
+      </div>
+      <div class="peer-review-tabs">
+        <button class="tab-btn active" data-tab="my-reviews">My Reviews</button>
+        <button class="tab-btn" data-tab="created">Created</button>
+        <button class="tab-btn" data-tab="criteria">Criteria</button>
+      </div>
+      <div class="peer-review-content">
+        <div class="tab-content active" id="my-reviews">
+          <div class="no-assignments">No review assignments yet.</div>
+        </div>
+        <div class="tab-content" id="created">
+          <div class="no-assignments">No assignments created yet.</div>
+        </div>
+        <div class="tab-content" id="criteria">
+          <div class="criteria-list"></div>
+        </div>
+      </div>
+    `;
+
+    this._addStyling();
+    this._setupEventListeners();
+    this.refresh();
+  }
+
+  /**
+   * Add panel styling
+   */
+  private _addStyling(): void {
+    const style = document.createElement('style');
+    style.textContent = `
+      .jp-peer-review-panel {
+        min-width: 280px;
+        font-family: var(--jp-ui-font-family);
+      }
+      .peer-review-header {
+        padding: 12px;
+        border-bottom: 1px solid var(--jp-border-color0);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--jp-layout-color1);
+      }
+      .peer-review-header h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .new-assignment-btn {
+        background: var(--jp-brand-color1);
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .peer-review-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--jp-border-color0);
+      }
+      .tab-btn {
+        flex: 1;
+        padding: 8px 4px;
+        border: none;
+        background: var(--jp-layout-color1);
+        cursor: pointer;
+        font-size: 11px;
+        border-bottom: 2px solid transparent;
+      }
+      .tab-btn.active {
+        background: var(--jp-layout-color0);
+        border-bottom-color: var(--jp-brand-color1);
+      }
+      .peer-review-content {
+        padding: 12px;
+        overflow-y: auto;
+        max-height: calc(100vh - 200px);
+      }
+      .tab-content {
+        display: none;
+      }
+      .tab-content.active {
+        display: block;
+      }
+      .no-assignments {
+        text-align: center;
+        color: var(--jp-ui-font-color2);
+        font-style: italic;
+        padding: 20px;
+        font-size: 12px;
+      }
+      .assignment-item {
+        background: var(--jp-layout-color1);
+        border: 1px solid var(--jp-border-color0);
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 8px;
+      }
+      .assignment-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .assignment-title {
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .assignment-status {
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 500;
+      }
+      .assignment-status.pending { background: #fff3e0; color: #f57c00; }
+      .assignment-status.in_progress { background: #e3f2fd; color: #1976d2; }
+      .assignment-status.completed { background: #e8f5e8; color: #388e3c; }
+      .assignment-meta {
+        font-size: 11px;
+        color: var(--jp-ui-font-color2);
+        margin-bottom: 8px;
+      }
+      .assignment-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .action-btn {
+        padding: 4px 8px;
+        border: none;
+        border-radius: 3px;
+        font-size: 10px;
+        cursor: pointer;
+      }
+      .start-btn { background: #2196f3; color: white; }
+      .submit-btn { background: #4caf50; color: white; }
+      .criteria-item {
+        background: var(--jp-layout-color1);
+        border: 1px solid var(--jp-border-color0);
+        border-radius: 4px;
+        padding: 8px;
+        margin-bottom: 6px;
+      }
+      .criteria-name {
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      .criteria-desc {
+        font-size: 11px;
+        color: var(--jp-ui-font-color2);
+        margin-bottom: 4px;
+      }
+      .criteria-meta {
+        font-size: 10px;
+        color: var(--jp-ui-font-color2);
+      }
+      
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Setup event listeners
+   */
+  private _setupEventListeners(): void {
+    // Tab switching
+    const tabBtns = this.node.querySelectorAll('.tab-btn');
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tabName = (btn as HTMLElement).dataset.tab;
+        this._switchTab(tabName!);
+      });
+    });
+
+    // New assignment button
+    const newAssignmentBtn = this.node.querySelector('.new-assignment-btn');
+    newAssignmentBtn?.addEventListener('click', () => {
+      this._showNewAssignmentDialog();
+    });
+  }
+
+  /**
+   * Switch active tab
+   */
+  private _switchTab(tabName: string): void {
+    // Update tab buttons
+    this.node.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.remove('active');
+    });
+    this.node.querySelector(`[data-tab="${tabName}"]`)?.classList.add('active');
+
+    // Update tab content
+    this.node.querySelectorAll('.tab-content').forEach(content => {
+      content.classList.remove('active');
+    });
+    this.node.querySelector(`#${tabName}`)?.classList.add('active');
+  }
+
+  /**
+   * Show new assignment dialog
+   */
+  private _showNewAssignmentDialog(): void {
+    // Create a simple dialog for demo purposes
+    const assignedTo = prompt('Assign to username:');
+    if (!assignedTo) return;
+
+    const notebookPath = 'demo_notebook.ipynb'; // Could be dynamic
+    const dueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 1 week
+    const criteria = ['code-quality', 'functionality']; // Default criteria
+
+    this._manager.createAssignment(assignedTo, notebookPath, dueDate, criteria);
+  }
+
+  /**
+   * Refresh panel content
+   */
+  public refresh(): void {
+    this._refreshMyReviews();
+    this._refreshCreatedAssignments();
+    this._refreshCriteria();
+  }
+
+  /**
+   * Refresh my reviews tab
+   */
+  private _refreshMyReviews(): void {
+    const myReviews = this._manager.getMyAssignments();
+    const container = this.node.querySelector('#my-reviews');
+    if (!container) return;
+
+    if (myReviews.length === 0) {
+      container.innerHTML = '<div class="no-assignments">No review assignments yet.</div>';
+      return;
+    }
+
+    const html = myReviews.map(assignment => `
+      <div class="assignment-item">
+        <div class="assignment-header">
+          <div class="assignment-title">${assignment.notebookPath}</div>
+          <div class="assignment-status ${assignment.status}">${assignment.status}</div>
+        </div>
+        <div class="assignment-meta">
+          Due: ${assignment.dueDate.toLocaleDateString()}
+          ${assignment.score ? `• Score: ${assignment.score}/10` : ''}
+        </div>
+        <div class="assignment-actions">
+          ${assignment.status === 'pending' ? 
+            `<button class="action-btn start-btn" onclick="this.closest('.jp-peer-review-panel').manager.startReview('${assignment.id}')">Start Review</button>` : ''}
+          ${assignment.status === 'in_progress' ? 
+            `<button class="action-btn submit-btn">Submit Review</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  }
+
+  /**
+   * Refresh created assignments tab
+   */
+  private _refreshCreatedAssignments(): void {
+    const createdAssignments = this._manager.getCreatedAssignments();
+    const container = this.node.querySelector('#created');
+    if (!container) return;
+
+    if (createdAssignments.length === 0) {
+      container.innerHTML = '<div class="no-assignments">No assignments created yet.</div>';
+      return;
+    }
+
+    const html = createdAssignments.map(assignment => `
+      <div class="assignment-item">
+        <div class="assignment-header">
+          <div class="assignment-title">${assignment.notebookPath}</div>
+          <div class="assignment-status ${assignment.status}">${assignment.status}</div>
+        </div>
+        <div class="assignment-meta">
+          Assigned to: ${assignment.assignedTo} • Due: ${assignment.dueDate.toLocaleDateString()}
+          ${assignment.score ? `• Score: ${assignment.score}/10` : ''}
+        </div>
+        ${assignment.feedback ? `<div class="assignment-feedback">${assignment.feedback}</div>` : ''}
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  }
+
+  /**
+   * Refresh criteria tab
+   */
+  private _refreshCriteria(): void {
+    const criteria = this._manager.getCriteria();
+    const container = this.node.querySelector('.criteria-list');
+    if (!container) return;
+
+    const html = criteria.map(criterion => `
+      <div class="criteria-item">
+        <div class="criteria-name">${criterion.name}</div>
+        <div class="criteria-desc">${criterion.description}</div>
+        <div class="criteria-meta">Weight: ${criterion.weight}% • Max Score: ${criterion.maxScore}</div>
+      </div>
+    `).join('');
+
+    container.innerHTML = html;
+  }
+} 
