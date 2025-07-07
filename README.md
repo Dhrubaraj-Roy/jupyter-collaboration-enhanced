@@ -136,6 +136,8 @@ projectX/
 └── jupyter-collab-env/             # Python environment
 ```
 
+- **Note:** The `lib/` folders inside each package are build artifacts and are not tracked in git (see `.gitignore`).
+
 ## 🔧 Configuration
 
 ### Server Configuration (`jupyter_server_config.py`)
