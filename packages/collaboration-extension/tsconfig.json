@@ -1,0 +1,16 @@
+{
+  "extends": "@jupyterlab/builder/lib/tsconfig.base.json",
+  "include": ["src/*"],
+  "references": [
+    {
+      "path": "../collaboration"
+    }
+  ],
+  "compilerOptions": {
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  }
+} 
